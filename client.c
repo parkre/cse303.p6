@@ -168,14 +168,12 @@ void put_file(int fd, char *put_name)
         i++;
     }
 
-    int j = 0, temp_size = file_size;
+    int j = 1, temp_size = file_size / 10; //acount for file_size of 0
     while (temp_size)
     {
         j++;
         temp_size /= 10;
     }
-    if (j == 0)
-        j = 1;
 
     char size[j];
     sprintf(size, "%d", file_size); 
@@ -188,16 +186,24 @@ void put_file(int fd, char *put_name)
     strcat(put, "\n");
     strcat(put, file_content);
 
-    write(fd, put, strlen(put));
+    if (write(fd, put, strlen(put)) < 0)
+    {
+        die("Put_file write error", strerror(errno));
+    }
 
     fclose(fp);
 
     char response[BUFSIZE];
-    memset(response, '0', BUFSIZE);
-    read(fd, response, BUFSIZE);
-
-    if (strcmp(response, "OK\n"))
-        printf("PUT error: %s", response);
+    bzero(response, BUFSIZE);
+    if (read(fd, response, BUFSIZE) < 0)
+    {
+        die("Put_file read error", strerror(errno));
+    }
+    else
+    {
+        if (strcmp(response, "OK\n")) //check for OK
+            die("Put_file server response error", response);
+    }
 }
 
 /*
@@ -211,26 +217,54 @@ void get_file(int fd, char *get_name, char *save_name)
     strcpy(get, "GET\n");
     strcat(get, get_name);
 
-    write(fd, get, size);
+    if (write(fd, get, size) < 0)
+    {
+        die("Get_file write error", strerror(errno));
+    }
 
-    int status = 0;
     char rec_buf[BUFSIZE];
+    bzero(rec_buf, BUFSIZE);
+    int bytes_sent = 0;
+    char * buf;
     FILE * fp = fopen(save_name, "w");
 
-    if (read(fp, rec_buf, BUFSIZE) != -1)
+    if ((bytes_sent = read(fd, rec_buf, BUFSIZE - 1)) < 0)
     {
-        int offset = strlen(get_name) + 5;
+        /* check to make sure correct file was sent */
+        buf = strtok(rec_buf, "\n");
+        int offset = 0;
+        if (strcmp(buf, "OK\n"))
+        {
+            die("Get_file server response error", buf);
+        }
+        else
+        {
+            offset += strlen(buf);
+            buf = strtok(NULL, "\n");
+            if (strcmp(buf, get_name))
+                die("Get_file fileerror", "Incorrect file retrieved");
+            offset += strlen(buf);
+        }
+
+        rec_buf[bytes_sent] = '\0';
         fputs(rec_buf + offset, fp);
+        printf("%s\n\n", rec_buf);
+        bzero(rec_buf, BUFSIZE);
     }
     else
     {
-        printf("GET error: %s", rec_buf);
+        die("Get_file read error", strerror(errno));
     }
     
-    while (read(fp, rec_buf, BUFSIZE) > 0)
+    while ((bytes_sent = read(fd, rec_buf, BUFSIZE - 1)) > 0)
     {
+        rec_buf[bytes_sent] = '\0';
         fputs(rec_buf, fp);
+        printf("%s\n\n", rec_buf);
+        bzero(rec_buf, BUFSIZE);
     } 
+
+    fclose(fp);
 }
 
 /*
