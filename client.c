@@ -178,7 +178,7 @@ void put_file(int fd, char *put_name)
     char size[j];
     sprintf(size, "%d", file_size); 
     
-    char put[strlen(put_name) + j + file_size + 6];
+    char put[strlen(put_name) + j + file_size + 6]; //PUT\n + \n + \n
     strcpy(put, "PUT\n");
     strcat(put, put_name);
     strcat(put, "\n");
@@ -212,7 +212,7 @@ void put_file(int fd, char *put_name)
  */
 void get_file(int fd, char *get_name, char *save_name) 
 {
-    int size = strlen(get_name) + 4;
+    int size = strlen(get_name) + 5; //GET\n + \0
     char get[size];
     strcpy(get, "GET\n");
     strcat(get, get_name);
@@ -233,7 +233,7 @@ void get_file(int fd, char *get_name, char *save_name)
         /* check to make sure correct file was sent */
         buf = strtok(rec_buf, "\n");
         int offset = 0;
-        if (strcmp(buf, "OK\n"))
+        if (strcmp(buf, "OK"))
         {
             die("Get_file server response error", buf);
         }
@@ -242,13 +242,13 @@ void get_file(int fd, char *get_name, char *save_name)
             offset += strlen(buf);
             buf = strtok(NULL, "\n");
             if (strcmp(buf, get_name))
-                die("Get_file fileerror", "Incorrect file retrieved");
+                die("Get_file file error", "Incorrect file retrieved");
             offset += strlen(buf);
         }
 
         rec_buf[bytes_sent] = '\0';
         fputs(rec_buf + offset, fp);
-        printf("%s\n\n", rec_buf);
+        //printf("%s\n\n", rec_buf);
         bzero(rec_buf, BUFSIZE);
     }
     else
@@ -258,9 +258,11 @@ void get_file(int fd, char *get_name, char *save_name)
     
     while ((bytes_sent = read(fd, rec_buf, BUFSIZE - 1)) > 0)
     {
-        rec_buf[bytes_sent] = '\0';
+        if (bytes_sent < BUFSIZE - 1)
+            rec_buf[bytes_sent] = '\0';
+
         fputs(rec_buf, fp);
-        printf("%s\n\n", rec_buf);
+        //printf("%s\n\n", rec_buf);
         bzero(rec_buf, BUFSIZE);
     } 
 
