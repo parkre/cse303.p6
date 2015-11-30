@@ -294,8 +294,7 @@ int main(int argc, char **argv) {
     }
 
     /* open a connection to the server */
-    //int fd = connect_to_server(server, port);
-    int fd = 4;
+    int fd = connect_to_server(server, port);
     /* put or get, as appropriate */
     if (put_name)
         put_file(fd, put_name);
