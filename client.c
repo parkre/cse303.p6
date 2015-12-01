@@ -20,7 +20,10 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#define CUSTOM_EOF '$'
 #define BUFSIZE 8192
+#define RSIZE 256
+#define HEADERSIZE 128
 
 /*
  * help() - Print a help message
@@ -150,21 +153,109 @@ void echo_client(int fd)
 }
 
 /*
+ * send_error() - send an error back to the client
+ */
+void send_error(int connfd, const char * msg)
+{
+    fprintf(stderr, "Sending error message to client: %s", msg);
+    write(connfd, msg, sizeof(msg));
+    //write(connfd, EOF, 4);
+}
+
+/*
+ * - Send() - send wrapper
+ */
+void Send(int connfd, void * buffer, int length)
+{
+    unsigned char * buf_location = (unsigned char * )buffer;
+    int bytes_sent = 1;
+    while(length){
+        if ((bytes_sent = write(connfd, buf_location, length)) < 0)
+        {
+            if (errno != EINTR)
+                die("Put_file write error", strerror(errno));
+            bytes_sent = 0;
+        }
+        length -= bytes_sent;
+        buf_location += bytes_sent;
+    }
+}
+
+/*
+ * - Send_Int() - uses Send() to send one int
+ */
+void Send_Int(int connfd, uint32_t val){
+    Send(connfd, &val, sizeof(val));
+    //return return_value;
+    //return ntohl(return_value);
+}
+
+/*
+ * - Receive() - recv wrapper
+ */
+unsigned char Receive(int connfd, void * buffer, int length)
+{
+    unsigned char * buf_location = (unsigned char * )buffer;
+    unsigned char return_value = 0;
+    int bytes_received = 1;
+    while(length && !return_value)
+    {
+        bytes_received = recv(connfd, buffer, length, 0);
+        if(!bytes_received)
+        {
+            return_value = 1;
+        }
+        else if(bytes_received == -1)
+        {
+            if(errno != EINTR)
+                die("read error: ", strerror(errno));
+            continue;
+        }
+        else
+        {
+            length -= bytes_received;
+            buf_location += bytes_received;
+        }
+    }
+    return return_value;
+}
+
+uint32_t Receive_Int(int connfd)
+{
+    uint32_t return_value;
+    Receive(connfd, &return_value, sizeof(return_value));
+    return return_value;
+    //return ntohl(return_value);
+}
+
+/*
+int check_header(const char * str1, const char * str2)
+{
+
+}
+*/
+
+/*
  * put_file() - send a file to the server accessible via the given socket fd
  */
 void put_file(int fd, char *put_name) 
 {
-    FILE * fp = fopen(put_name, "r");    
+    FILE * fp = fopen(put_name, "rb");   
+    if(fp == NULL)
+    {
+            send_error(fd, "GET file not found\n");
+            return;
+    } 
     fseek(fp, 0, SEEK_END);
     int file_size = ftell(fp);
     fseek(fp, 0, SEEK_SET);
-    char file_content[file_size];
+    char file_buf[file_size];
 
     int c;
     int i = 0;
     while ((c = fgetc(fp)) != EOF)
     {
-        file_content[i] = c;
+        file_buf[i] = c;
         i++;
     }
 
@@ -175,35 +266,75 @@ void put_file(int fd, char *put_name)
         temp_size /= 10;
     }
 
+    fclose(fp);
+
     char size[j];
     sprintf(size, "%d", file_size); 
     
-    char put[strlen(put_name) + j + file_size + 6]; //PUT\n + \n + \n
+    /* create put request */
+    uint32_t header_size = strlen("PUT") + strlen(put_name) + strlen(size) + 3;
+    char put[strlen(put_name) + j + file_size + 7]; //PUT\n + \n + \n + \0
+    bzero(put, strlen(put));
     strcpy(put, "PUT\n");
     strcat(put, put_name);
     strcat(put, "\n");
     strcat(put, size);
     strcat(put, "\n");
-    strcat(put, file_content);
+    strcat(put, file_buf);
+    //strcat(put, "$");
 
-    if (write(fd, put, strlen(put)) < 0)
+    //ssize_t bytes_sent = 0;
+    //size_t bytes_left = strlen(put);
+    //char * w_ptr = put;
+    
+    Send_Int(fd, header_size);
+    Send(fd, put, strlen(put));
+/*
+    while (bytes_left > 0)
     {
-        die("Put_file write error", strerror(errno));
+        if ((bytes_sent = write(fd, w_ptr, bytes_left)) <= 0)
+        {
+            if (errno != EINTR)
+                die("Put_file write error", strerror(errno));
+            bytes_sent = 0;
+        }
+        bytes_left -= bytes_sent;
+        w_ptr += bytes_sent;
     }
+*/
 
-    fclose(fp);
+    uint32_t rec_size = Receive_Int(fd);
+    char response[rec_size];
+    bzero(response, rec_size);
+    if (Receive(fd, response, rec_size) != 0)
+        die("Put_file", "Connection closed while reading response");
+    
 
-    char response[BUFSIZE];
-    bzero(response, BUFSIZE);
-    if (read(fd, response, BUFSIZE) < 0)
+    /*
+    char * r_ptr = response;
+    while (1)
     {
-        die("Put_file read error", strerror(errno));
+        if ((bytes_sent = read(fd, r_ptr, RSIZE)) < 0)
+        {
+            if (errno != EINTR)
+                die("Put_file read error", strerror(errno));
+            continue;
+        }
+        if (bytes_sent == 0)
+        {
+            die("Put_file server error: ", "received EOF");
+        }
+        r_ptr += bytes_sent;
+        if (*(r_ptr-1) == '\n') 
+        {
+            *r_ptr = 0;
+            break;
+        }
     }
-    else
-    {
-        if (strcmp(response, "OK\n")) //check for OK
-            die("Put_file server response error", response);
-    }
+    */
+
+    if (strcmp(response, "OK\n")) //check for OK
+        die("Put_file server response error", response);
 }
 
 /*
@@ -214,58 +345,122 @@ void get_file(int fd, char *get_name, char *save_name)
 {
     int size = strlen(get_name) + 5; //GET\n + \0
     char get[size];
+    bzero(get, size);
     strcpy(get, "GET\n");
     strcat(get, get_name);
 
-    if (write(fd, get, size) < 0)
-    {
-        die("Get_file write error", strerror(errno));
-    }
+    uint32_t header_size = strlen(get);
+    Send_Int(fd, header_size);
+    Send(fd, get, header_size);
 
-    char rec_buf[BUFSIZE];
-    bzero(rec_buf, BUFSIZE);
-    int bytes_sent = 0;
-    char * buf;
-    FILE * fp = fopen(save_name, "w");
-
-    if ((bytes_sent = read(fd, rec_buf, BUFSIZE - 1)) < 0)
+    /*
+    ssize_t bytes_sent = 0;
+    size_t bytes_left = strlen(get);
+    char * w_ptr = get;
+    while (bytes_left > 0)
     {
-        /* check to make sure correct file was sent */
-        buf = strtok(rec_buf, "\n");
-        int offset = 0;
-        if (strcmp(buf, "OK"))
+        if ((bytes_sent = write(fd, w_ptr, bytes_left)) <= 0)
         {
-            die("Get_file server response error", buf);
+            if (errno != EINTR)
+                die("Get_file write error", strerror(errno));
+            bytes_sent = 0;
         }
-        else
-        {
-            offset += strlen(buf);
-            buf = strtok(NULL, "\n");
-            if (strcmp(buf, get_name))
-                die("Get_file file error", "Incorrect file retrieved");
-            offset += strlen(buf);
-        }
+        bytes_left -= bytes_sent;
+        w_ptr += bytes_sent;
+    }
+    */
 
-        rec_buf[bytes_sent] = '\0';
-        fputs(rec_buf + offset, fp);
-        //printf("%s\n\n", rec_buf);
-        bzero(rec_buf, BUFSIZE);
-    }
-    else
+    /* get size of header */
+    uint32_t rec_headsize = Receive_Int(fd);
+
+    /* get header */
+    char header_buf[rec_headsize];
+    bzero(header_buf, rec_headsize);
+    if (Receive(fd, header_buf, rec_headsize) != 0)
+        die("Get_file", "Connection closed while reading header");
+
+    //char header_buf[HEADERSIZE];
+    //bzero(header_buf, HEADERSIZE);
+    //int file_size = 0;
+    //char * r_ptr = header_buf;
+    //bytes_left = HEADERSIZE;
+    /*
+    while (bytes_left > 0)
     {
-        die("Get_file read error", strerror(errno));
+        if ((bytes_sent = read(fd, r_ptr, bytes_left)) < 0)
+        {
+            if (errno != EINTR)
+                die("Get_file read error", strerror(errno));
+            continue;
+        }
+        if (bytes_sent == 0)
+        {
+            break;
+        }
+        bytes_left -= bytes_sent;
+        r_ptr += bytes_sent;
     }
+    */
     
-    while ((bytes_sent = read(fd, rec_buf, BUFSIZE - 1)) > 0)
+    /* check for OK */
+    char * iter_buf = strtok(header_buf, "\n");
+    if (strcmp(iter_buf, "OK"))
+        die("Get_file server response error", iter_buf);
+    off_t offset = strlen("OK\n");
+    
+    /* check to make sure correct file was sent */
+    iter_buf = strtok(NULL, "\n");
+    if (strcmp(iter_buf, get_name))
+        die("Get_file file error", "Incorrect file retrieved");
+    offset += strlen(iter_buf) + 1;
+
+    /* check file size */
+    char * t;
+    iter_buf = strtok(NULL, "\n");
+    offset += strlen(iter_buf) + 1;
+    int file_size = strtol(iter_buf, &t, 10);
+
+    /* create new buffer for file content */
+    char file_buf[file_size];
+    bzero(file_buf, file_size);
+    if (Receive(fd, file_buf, file_size) != 0)
+        die("Get_file", "Connection closed while reading file");
+
+
+    /*
+    size_t already_read = HEADERSIZE - bytes_left - offset;
+    bytes_left = file_size - already_read;
+    memcpy(file_buf, &header_buf[offset], already_read);
+    r_ptr = file_buf;
+    r_ptr += already_read;
+    while (bytes_left > 0)
     {
-        if (bytes_sent < BUFSIZE - 1)
-            rec_buf[bytes_sent] = '\0';
+        if ((bytes_sent = read(fd, r_ptr, bytes_left)) < 0)
+        {
+            if(errno != EINTR)
+                die("read error: ", strerror(errno));
+            continue;
+        }
+        /* this shouldn't ever happen... *
+        if(bytes_sent == 0)
+        {
+            fprintf(stderr, "File Buffer so far: %s\n", file_buf);
+            return;
+        }
+        /* this prevents a read hang when the size of the file is less than the assumed header size *
+        if (*(r_ptr-1) == CUSTOM_EOF) 
+        {
+            *r_ptr = 0;
+            break;
+        }
+        /* update pointer *
+        bytes_left -= bytes_sent;
+        r_ptr += bytes_sent;
+    }
+    */
 
-        fputs(rec_buf, fp);
-        //printf("%s\n\n", rec_buf);
-        bzero(rec_buf, BUFSIZE);
-    } 
-
+    FILE * fp = fopen(save_name, "wb");
+    fwrite(file_buf, sizeof(file_buf) + 1, 1, fp);
     fclose(fp);
 }
 
