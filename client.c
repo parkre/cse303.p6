@@ -243,8 +243,8 @@ void put_file(int fd, char *put_name)
     FILE * fp = fopen(put_name, "rb");   
     if(fp == NULL)
     {
-            send_error(fd, "GET file not found\n");
-            return;
+        send_error(fd, "GET file not found\n");
+        return;
     } 
     fseek(fp, 0, SEEK_END);
     int file_size = ftell(fp);
@@ -268,72 +268,30 @@ void put_file(int fd, char *put_name)
 
     fclose(fp);
 
-    char size[j];
-    sprintf(size, "%d", file_size); 
+    char str_fsize[j];
+    sprintf(str_fsize, "%d", file_size); 
     
     /* create put request */
-    uint32_t header_size = strlen("PUT") + strlen(put_name) + strlen(size) + 3;
-    char put[strlen(put_name) + j + file_size + 7]; //PUT\n + \n + \n + \0
-    bzero(put, strlen(put));
+    uint32_t header_size = strlen("PUT") + strlen(put_name) + strlen(str_fsize) + 3;
+    char put[header_size + file_size];
+    bzero(put, header_size + file_size);
     strcpy(put, "PUT\n");
     strcat(put, put_name);
     strcat(put, "\n");
-    strcat(put, size);
+    strcat(put, str_fsize);
     strcat(put, "\n");
     strcat(put, file_buf);
-    //strcat(put, "$");
-
-    //ssize_t bytes_sent = 0;
-    //size_t bytes_left = strlen(put);
-    //char * w_ptr = put;
     
     Send_Int(fd, header_size);
-    Send(fd, put, strlen(put));
-/*
-    while (bytes_left > 0)
-    {
-        if ((bytes_sent = write(fd, w_ptr, bytes_left)) <= 0)
-        {
-            if (errno != EINTR)
-                die("Put_file write error", strerror(errno));
-            bytes_sent = 0;
-        }
-        bytes_left -= bytes_sent;
-        w_ptr += bytes_sent;
-    }
-*/
+    Send(fd, put, header_size + file_size);
 
     uint32_t rec_size = Receive_Int(fd);
     char response[rec_size];
     bzero(response, rec_size);
     if (Receive(fd, response, rec_size) != 0)
         die("Put_file", "Connection closed while reading response");
-    
 
-    /*
-    char * r_ptr = response;
-    while (1)
-    {
-        if ((bytes_sent = read(fd, r_ptr, RSIZE)) < 0)
-        {
-            if (errno != EINTR)
-                die("Put_file read error", strerror(errno));
-            continue;
-        }
-        if (bytes_sent == 0)
-        {
-            die("Put_file server error: ", "received EOF");
-        }
-        r_ptr += bytes_sent;
-        if (*(r_ptr-1) == '\n') 
-        {
-            *r_ptr = 0;
-            break;
-        }
-    }
-    */
-
-    if (strcmp(response, "OK\n")) //check for OK
+    if (strncmp(response, "OK\n", rec_size)) //check for OK
         die("Put_file server response error", response);
 }
 
