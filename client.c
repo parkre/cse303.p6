@@ -239,7 +239,7 @@ void put_file(int fd, char *put_name)
     fseek(fp, 0, SEEK_END);
     int file_size = ftell(fp);
     fseek(fp, 0, SEEK_SET);
-    char file_buf[file_size];
+    unsigned char file_buf[file_size];
 
     /* store file in buffer */
     size_t bytes_read = fread(file_buf, sizeof(unsigned char), file_size, fp);
@@ -277,6 +277,16 @@ void put_file(int fd, char *put_name)
     Send_Int(fd, header_size);
     /* send put request header */
     Send(fd, put_header, header_size);
+
+    /* send md5 sizeof(hash) and hash */
+    int i = 0;
+    unsigned char client_hash[MD5_DIGEST_LENGTH], client_digest[33];
+    MD5(file_buf, sizeof(file_buf), client_hash);
+    for (i = 0; i < 16; i++)
+         sprintf(&client_digest[i*2], "%02x", client_hash[i]);
+    Send_Int(fd, sizeof(client_digest));
+    Send(fd, client_digest, sizeof(client_digest));
+
     /* send put file */
     Send(fd, file_buf, file_size);
 
@@ -318,8 +328,6 @@ void get_file(int fd, char *get_name, char *save_name)
     /* get header */
     char header_buf[header_size];
     bzero(header_buf, header_size);
-
-    /* get response */
     if (Receive(fd, header_buf, header_size) != 0)
         die("Get_file", "Connection closed while reading header");
 
@@ -327,8 +335,8 @@ void get_file(int fd, char *get_name, char *save_name)
     char * iter_buf = strtok(header_buf, "\n");
     if (strcmp(iter_buf, "OK"))
         die("Get_file server response error", iter_buf);
-    
-    /* check to make sure correct file was sent */
+
+    /* check for correct file name */
     iter_buf = strtok(NULL, "\n");
     if (strcmp(iter_buf, get_name))
         die("Get_file file error", "Incorrect file retrieved");
@@ -338,12 +346,32 @@ void get_file(int fd, char *get_name, char *save_name)
     iter_buf = strtok(NULL, "\n");
     int file_size = strtol(iter_buf, &t, 10);
 
+    /* MD5 hash read from server */
+    uint32_t md_size = Receive_Int(fd);
+    //if (md_size != 16)
+    //    die("GET", "md5 size != 16");
+    char server_digest[md_size];
+    if (Receive(fd, server_digest, md_size))
+        die("GET error", "incorrect MD5 hash value");
+    fprintf(stderr, "MD5 server for GET: %s\n", server_digest);
+
     /* create new buffer for file content */
-    char file_buf[file_size];
+    unsigned char file_buf[file_size];
     bzero(file_buf, file_size);
     if (Receive(fd, file_buf, file_size) != 0)
         die("Get_file", "Connection closed while reading file");
 
+    /* received file MD5 hash digest */
+    int i = 0;
+    unsigned char client_hash[MD5_DIGEST_LENGTH], client_digest[33];
+    MD5(file_buf, sizeof(file_buf), client_hash);
+    for (i = 0; i < 16; i++)
+         sprintf(&client_digest[i*2], "%02x", client_hash[i]);
+
+    /* compare MD5 server and client hash digests */
+    if (memcmp(client_digest, server_digest, MD5_DIGEST_LENGTH))
+        die("GET", "client and server MD5 digest hashes do not match");
+  
     FILE * fp = fopen(save_name, "wb");
     fwrite(file_buf, sizeof(file_buf), 1, fp);
     fclose(fp);

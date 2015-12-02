@@ -99,7 +99,6 @@ void handle_requests(int listenfd, void (*service_function)(int, int), int param
             die("Error in close(): ", strerror(errno));
     }
 }
-
 /*
  * - Receive() - recv wrapper
  */
@@ -159,17 +158,15 @@ void Send_Int(int connfd, uint32_t val){
     //return return_value;
     //return ntohl(return_value);
 }
-
 /*
  * send_error() - send an error back to the client
  */
-void send_error(int connfd, char * msg)
-{
+void send_error(int connfd, char * msg){
     fprintf(stderr, "Sending error message to client: %s", msg);
     Send_Int(connfd, strlen(msg));
     Send(connfd, msg, strlen(msg));
+    //write(connfd, EOF, 4);
 }
-
 /*
  * - file_server() - etc
  */
@@ -210,9 +207,27 @@ void file_server(int connfd, int lru_size){
             send_error(connfd, "Invalid filesize in PUT request\n");
             return;
         }
-        char file[filesize];
+        /* get the MD5 hash */
+        uint32_t md5_size = Receive_Int(connfd);
+        char client_digest[md5_size];
+        if(Receive(connfd, client_digest, md5_size) != 0){
+            die("SERVER PUT", "Connection closed while reading planned MD5 hash");
+        }
+        unsigned char file[filesize];
         if(Receive(connfd, file, filesize) != 0){
             die("SERVER PUT","Connection closed while reading file for PUT");
+        }
+        /* calculate the file's actual MD5 */
+        int i = 0;
+        unsigned char server_hash[MD5_DIGEST_LENGTH], server_digest[33];
+        MD5(file, sizeof(file), server_hash);
+        for (i = 0; i < 16; i++)
+            sprintf(&server_digest[i*2], "%02x", server_hash[i]);
+        /* validate MD5's */
+        fprintf(stderr, "Planned MD5: %s\nActual MD5: %s\n", client_digest, server_digest);
+        if(memcmp(client_digest, server_digest, sizeof(server_digest)) != 0){
+            send_error(connfd, "MD5 does not match!\n");
+            //return;
         }
         /* save the file buffer to the server */
         FILE * fp = fopen(filename, "wb");
@@ -234,6 +249,7 @@ void file_server(int connfd, int lru_size){
         size_t filesize = ftell(fp);
         fseek(fp, 0, SEEK_SET);
         unsigned char file[filesize];
+        /* store file in buffer */
         size_t bytes_read = fread(file, sizeof(unsigned char), filesize, fp);
         if(bytes_read != filesize){
             fclose(fp);
@@ -252,7 +268,7 @@ void file_server(int connfd, int lru_size){
         char size[j];
         sprintf(size, "%d", filesize); 
 
-        uint32_t response_headersize = strlen("OK\n") + strlen(filename) + j + 2;  
+        uint32_t response_headersize = strlen("OK\n") + strlen(filename) + strlen(size) + 2;  
         char response_header[response_headersize];
         bzero(response_header, response_headersize);
         strcpy(response_header, "OK\n");
@@ -265,173 +281,21 @@ void file_server(int connfd, int lru_size){
         Send_Int(connfd, response_headersize);
         /* send the header */
         Send(connfd, response_header, response_headersize);
+        /* calculate the MD5 */
+        int i = 0;
+        unsigned char server_hash[MD5_DIGEST_LENGTH], server_digest[33];
+        MD5(file, sizeof(file), server_hash);
+        for (i = 0; i < 16; i++)
+            sprintf(&server_digest[i*2], "%02x", server_hash[i]);
+        fprintf(stderr, "PUT MD5: %s\n", server_digest);
+        /* send the MD5 hash */
+        Send_Int(connfd, sizeof(server_digest));
+        Send(connfd, server_digest, sizeof(server_digest));
+        
         /* send the file */
         Send(connfd, file, filesize);
     }
 }
-/*
- * file_server() - Read a request from a socket, satisfy the request, and
- *                 then close the connection.
- */
-// void file_server(int connfd, int lru_size) {
-//     /* TODO: set up a few static variables here to manage the LRU cache of
-//        files */
-
-//     /* TODO: replace following sample code with code that satisfies the
-//        requirements of the assignment */
-//     while(1) {
-//         /* read the header information */
-//         const int HEADERSIZE = 128;
-//         char buffer[HEADERSIZE];
-//         bzero(buffer, HEADERSIZE);
-//         /* read from the socket, handle shortcounts */
-//         char * buf_location = buffer;
-//         ssize_t bytes_left = HEADERSIZE;
-//         size_t bytes_sofar;
-//         while(bytes_left > 0){
-//             /* read data, swallow EINTRs */
-//             if((bytes_sofar = read(connfd, buf_location, bytes_left)) < 0){
-//                 if(errno != EINTR)
-//                     die("read error: ", strerror(errno));
-//                 continue;
-//             }
-//             //fprintf(stderr, "Bytes so far: %d\n", bytes_sofar);
-//             /* entire file was less than HEADERSIZE */
-//             if(bytes_sofar == 0){
-//                 break;
-//             }
-//             /* update pointer */
-//             buf_location += bytes_sofar;
-//             bytes_left -= bytes_sofar;
-//             /* this prevents a read hang when the size of the file is less than the assumed header size */
-//             if(*(buf_location-1) == CUSTOM_EOF){
-//                 break;
-//             }
-//         }
-//         /* parse the header */
-//         /* first line is PUT or GET */
-//         char header[strlen(buffer)];
-//         strcpy(header, buffer);
-//         char * request_type = strtok(header, "\n");
-//         int is_put = (strcmp(request_type, "PUT") == 0);
-//         int is_get = (strcmp(request_type, "GET") == 0);
-//         if(!is_put && !is_get){
-//             send_error(connfd, "Request must begin with PUT or GET\n");
-//             break;
-//         }
-//         /* next line is filename */
-//         char * filename;
-//         if((filename = strtok(NULL, "\n")) == NULL){
-//             send_error(connfd, "Request must include filename\n");
-//             break;
-//         }
-//         /* handle PUT */
-//         if(is_put){
-//             char * filesize_str;
-//             if((filesize_str = strtok(NULL, "\n")) == NULL){
-//                 send_error(connfd, "PUT request must include filesize\n");
-//                 break;
-//             }
-//             char * t;
-//             long filesize = strtol(filesize_str, &t, 10);
-//             if(filesize_str == t){
-//                 send_error(connfd, "Invalid filesize in PUT request\n");
-//                 break;
-//             }
-//             fprintf(stderr, "\tRequest Type:\t%s\n\tFilename:\t%s\n\tFilesize:\t%d bytes\n", request_type, filename, filesize);
-//             //fprintf(stderr, "The Buffer Is:\n%s\n", buffer);
-//             /* copy the file data from the header buffer to the file buffer */
-//             off_t offset = strlen(request_type) + strlen(filename) + strlen(filesize_str) + 3;
-//             size_t already_read = HEADERSIZE - bytes_left - offset;
-//             char file_buffer[filesize];
-//             bzero(file_buffer, filesize);
-//             memcpy(file_buffer, &buffer[offset], already_read);
-//             //fprintf(stderr, "After memcpy it is: \n%s\n", file_buffer);
-//             /* read the rest of the file, if there is any */
-//             /* read from the socket, handle shortcounts */
-//             buf_location = file_buffer;
-//             buf_location += already_read;
-//             bytes_left = filesize - already_read;
-//             while(bytes_left > 0){
-//                 /* read data, swallow EINTRs */
-//                 if((bytes_sofar = read(connfd, buf_location, bytes_left)) < 0){
-//                     if(errno != EINTR)
-//                         die("read error: ", strerror(errno));
-//                     continue;
-//                 }
-//                 /* this shouldn't ever happen... */
-//                 if(bytes_sofar == 0){
-//                     fprintf(stderr, "File Buffer so far: %s\n", file_buffer);
-//                     send_error(connfd, "Entire file could not be read in PUT request\n");
-//                     return;
-//                 }
-//                 /* update pointer */
-//                 buf_location += bytes_sofar;
-//                 bytes_left -= bytes_sofar;
-//             }
-//             /* save the file buffer to the server */
-//             FILE * fp = fopen(filename, "wb");
-//             fwrite(file_buffer, sizeof(file_buffer) + 1, 1, fp);
-//             fclose(fp);
-//             /* tell the client the PUT was successful */
-//             write(connfd, "OK\n", 3);
-//             break;
-//         }
-//         /* handle GET */
-//         else{
-//             //write(connfd, EOF, 1);
-//             fprintf(stderr, "BREAKING FROM GET\n");
-//             break;
-//         }
-//     }
-//     /* sample code: continually read lines from the client, and send them
-//        back to the client immediately */
-//     // while (1) {
-//     //     const int MAXLINE = 8192;
-//     //     char      buf[MAXLINE];   /* a place to store text from the client */
-//     //     bzero(buf, MAXLINE);
-
-//     //     /* read from socket, recognizing that we may get short counts */
-//     //     char *bufp = buf;              /* current pointer into buffer */
-//     //     ssize_t nremain = MAXLINE;     /* max characters we can still read */
-//     //     size_t nsofar;                 /* characters read so far */
-//     //     while (1) {
-//     //         /* read some data; swallow EINTRs */
-//     //         if ((nsofar = read(connfd, bufp, nremain)) < 0) {
-//     //             if (errno != EINTR)
-//     //                 die("read error: ", strerror(errno));
-//     //             continue;
-//     //         }
-//     //         /* end service to this client on EOF */
-//     //         if (nsofar == 0) {
-//     //             fprintf(stderr, "received EOF\n");
-//     //             return;
-//     //         }
-//     //         /* update pointer for next bit of reading */
-//     //         bufp += nsofar;
-//     //         nremain -= nsofar;
-//     //         if (*(bufp-1) == '\n') {
-//     //             *bufp = 0;
-//     //             break;
-//     //         }
-//     //     }
-
-//     //     /* dump content back to client (again, must handle short counts) */
-//     //     printf("server received %d bytes\n", MAXLINE-nremain);
-//     //     nremain = strlen(buf);
-//     //     bufp = buf;
-//     //     while (nremain > 0) {
-//     //         /* write some data; swallow EINTRs */
-//     //         if ((nsofar = write(connfd, bufp, nremain)) <= 0) {
-//     //             if (errno != EINTR)
-//     //                 die("Write error: ", strerror(errno));
-//     //             nsofar = 0;
-//     //         }
-//     //         nremain -= nsofar;
-//     //         bufp += nsofar;
-//     //     }
-//     // }
-// }
 
 /*
  * main() - parse command line, create a socket, handle requests
