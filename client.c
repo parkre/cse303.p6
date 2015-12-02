@@ -20,11 +20,6 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#define CUSTOM_EOF '$'
-#define BUFSIZE 8192
-#define RSIZE 256
-#define HEADERSIZE 128
-
 /* BRANCH CHECKSUM */
 
 /*
@@ -221,35 +216,31 @@ uint32_t Receive_Int(int connfd)
 }
 
 /*
-int check_header(const char * str1, const char * str2)
-{
-
-}
-*/
-
-/*
  * put_file() - send a file to the server accessible via the given socket fd
  */
 void put_file(int fd, char *put_name) 
 {
     /* open file and check for error */
     FILE * fp = fopen(put_name, "rb");   
-    if (fp == NULL)
+    if (fp == NULL){
         die("Put_file file error", "file not found");
+    }
      
     /* get file size */
     fseek(fp, 0, SEEK_END);
-    int file_size = ftell(fp);
+    size_t file_size = ftell(fp);
     fseek(fp, 0, SEEK_SET);
-    char file_buf[file_size];
+    unsigned char file_buf[file_size];
 
     /* store file in buffer */
     size_t bytes_read = fread(file_buf, sizeof(unsigned char), file_size, fp);
     if (bytes_read != file_size)
     {
-            fclose(fp);
-            die("Put_file fread error", "bytes_read != file_size");
+        fclose(fp);
+        die("Put_file fread error", "bytes_read != file_size");
     }
+    /* close file */
+    fclose(fp);
 
     /* hacky way to get number of digits in the file size */
     int j = 1, temp_size = file_size / 10; //acount for file_size of 0
@@ -258,15 +249,13 @@ void put_file(int fd, char *put_name)
         j++;
         temp_size /= 10;
     }
-    /* close file */
-    fclose(fp);
-
+    
     /* file size as string */
     char str_fsize[j];
     sprintf(str_fsize, "%d", file_size); 
     
     /* create put request */
-    uint32_t header_size = strlen("PUT") + strlen(put_name) + strlen(str_fsize) + 3;
+    uint32_t header_size = strlen("PUT") + strlen(put_name) + strlen(str_fsize) + 4;
     char put_header[header_size];
     bzero(put_header, header_size);
     strcpy(put_header, "PUT\n");
@@ -279,8 +268,19 @@ void put_file(int fd, char *put_name)
     Send_Int(fd, header_size);
     /* send put request header */
     Send(fd, put_header, header_size);
+    
+    /* send md5 sizeof(hash) and hash */
+    unsigned char md_hash[MD5_DIGEST_LENGTH];
+    //fprintf(stderr, "File_Buf is: %u\n", file_buf);
+    //fprintf(stderr, "File Size is: %d\n", sizeof(file_buf));
+    MD5(file_buf, sizeof(file_buf), md_hash);
+    fprintf(stderr, "MD5 Hash: %u\n", md_hash);
+    Send_Int(fd, sizeof(md_hash));
+    Send(fd, md_hash, sizeof(md_hash));
+    
     /* send put file */
     Send(fd, file_buf, file_size);
+
 
     /* get size of response header and create buffer */ 
     uint32_t rec_size = Receive_Int(fd);
@@ -295,6 +295,12 @@ void put_file(int fd, char *put_name)
     if (strncmp(response, "OK\n", rec_size))
         die("Put_file server response error", response);
 }
+
+/*
+ * Note that the server should verify the checksum before sending OK after a
+ * PUT.  After a GET, the client should compute the checksum, and if it
+ * doesn't match, it should cancel the GET and print an error.
+ */
 
 /*
  * get_file() - get a file from the server accessible via the given socket
@@ -335,16 +341,29 @@ void get_file(int fd, char *get_name, char *save_name)
     if (strcmp(iter_buf, get_name))
         die("Get_file file error", "Incorrect file retrieved");
 
+    uint32_t md_size = Receive_Int(fd); //should be 16
+    char server_md[md_size];
+    if (Receive(fd, server_md, md_size) != 0)
+        die("Get_file recv md5 hash", "Connection closed while reading header");
+
     /* check file size */
     char * t;
     iter_buf = strtok(NULL, "\n");
     int file_size = strtol(iter_buf, &t, 10);
 
     /* create new buffer for file content */
-    char file_buf[file_size];
+    unsigned char file_buf[file_size];
     bzero(file_buf, file_size);
     if (Receive(fd, file_buf, file_size) != 0)
         die("Get_file", "Connection closed while reading file");
+
+    unsigned char md_hash[16];
+    MD5(file_buf, sizeof(file_buf), md_hash);
+
+    fprintf(stderr, "MD5 Client Hash: %u, MD5 Server Hash: %u\n", md_hash, server_md);
+
+    if (memcmp(md_hash, server_md, MD5_DIGEST_LENGTH))
+        die("Get_file", "md5 hash discrepancy");
 
     FILE * fp = fopen(save_name, "wb");
     fwrite(file_buf, sizeof(file_buf), 1, fp);
