@@ -99,14 +99,7 @@ void handle_requests(int listenfd, void (*service_function)(int, int), int param
             die("Error in close(): ", strerror(errno));
     }
 }
-/*
- * send_error() - send an error back to the client
- */
-void send_error(int connfd, const char * msg){
-    fprintf(stderr, "Sending error message to client: %s", msg);
-    write(connfd, msg, sizeof(msg));
-    //write(connfd, EOF, 4);
-}
+
 /*
  * - Receive() - recv wrapper
  */
@@ -166,6 +159,17 @@ void Send_Int(int connfd, uint32_t val){
     //return return_value;
     //return ntohl(return_value);
 }
+
+/*
+ * send_error() - send an error back to the client
+ */
+void send_error(int connfd, char * msg)
+{
+    fprintf(stderr, "Sending error message to client: %s", msg);
+    Send_Int(connfd, strlen(msg));
+    Send(connfd, msg, strlen(msg));
+}
+
 /*
  * - file_server() - etc
  */

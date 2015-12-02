@@ -300,7 +300,7 @@ void put_file(int fd, char *put_name)
  */
 void get_file(int fd, char *get_name, char *save_name) 
 {
-    /*  */
+    /* create get request */
     uint32_t request_size = strlen(get_name) + strlen("GET\n");
     char get[request_size];
     bzero(get, request_size);
@@ -311,23 +311,6 @@ void get_file(int fd, char *get_name, char *save_name)
     Send_Int(fd, request_size);
     /* send request */
     Send(fd, get, request_size);
-
-    /*
-    ssize_t bytes_sent = 0;
-    size_t bytes_left = strlen(get);
-    char * w_ptr = get;
-    while (bytes_left > 0)
-    {
-        if ((bytes_sent = write(fd, w_ptr, bytes_left)) <= 0)
-        {
-            if (errno != EINTR)
-                die("Get_file write error", strerror(errno));
-            bytes_sent = 0;
-        }
-        bytes_left -= bytes_sent;
-        w_ptr += bytes_sent;
-    }
-    */
 
     /* get size of header */
     uint32_t header_size = Receive_Int(fd);
@@ -340,29 +323,6 @@ void get_file(int fd, char *get_name, char *save_name)
     if (Receive(fd, header_buf, header_size) != 0)
         die("Get_file", "Connection closed while reading header");
 
-    //char header_buf[HEADERSIZE];
-    //bzero(header_buf, HEADERSIZE);
-    //int file_size = 0;
-    //char * r_ptr = header_buf;
-    //bytes_left = HEADERSIZE;
-    /*
-    while (bytes_left > 0)
-    {
-        if ((bytes_sent = read(fd, r_ptr, bytes_left)) < 0)
-        {
-            if (errno != EINTR)
-                die("Get_file read error", strerror(errno));
-            continue;
-        }
-        if (bytes_sent == 0)
-        {
-            break;
-        }
-        bytes_left -= bytes_sent;
-        r_ptr += bytes_sent;
-    }
-    */
-    
     /* check for OK */
     char * iter_buf = strtok(header_buf, "\n");
     if (strcmp(iter_buf, "OK"))
@@ -383,38 +343,6 @@ void get_file(int fd, char *get_name, char *save_name)
     bzero(file_buf, file_size);
     if (Receive(fd, file_buf, file_size) != 0)
         die("Get_file", "Connection closed while reading file");
-
-    /*
-    size_t already_read = HEADERSIZE - bytes_left - offset;
-    bytes_left = file_size - already_read;
-    memcpy(file_buf, &header_buf[offset], already_read);
-    r_ptr = file_buf;
-    r_ptr += already_read;
-    while (bytes_left > 0)
-    {
-        if ((bytes_sent = read(fd, r_ptr, bytes_left)) < 0)
-        {
-            if(errno != EINTR)
-                die("read error: ", strerror(errno));
-            continue;
-        }
-        /* this shouldn't ever happen... *
-        if(bytes_sent == 0)
-        {
-            fprintf(stderr, "File Buffer so far: %s\n", file_buf);
-            return;
-        }
-        /* this prevents a read hang when the size of the file is less than the assumed header size *
-        if (*(r_ptr-1) == CUSTOM_EOF) 
-        {
-            *r_ptr = 0;
-            break;
-        }
-        /* update pointer *
-        bytes_left -= bytes_sent;
-        r_ptr += bytes_sent;
-    }
-    */
 
     FILE * fp = fopen(save_name, "wb");
     fwrite(file_buf, sizeof(file_buf), 1, fp);
