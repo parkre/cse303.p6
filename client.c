@@ -20,11 +20,6 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#define CUSTOM_EOF '$'
-#define BUFSIZE 8192
-#define RSIZE 256
-#define HEADERSIZE 128
-
 /*
  * help() - Print a help message
  */
@@ -219,11 +214,62 @@ uint32_t Receive_Int(int connfd)
 }
 
 /*
-int check_header(const char * str1, const char * str2)
+ * create RSA public key
+ */
+RSA * get_pubkey(char * filename)
 {
+    FILE * fp = fopen(filename, "rb");
+    if (fp == NULL)
+        die("RSA error", "public.pem not found");
+    RSA * rsa = RSA_new();
+    PEM_read_RSA_PUBKEY(fp, &rsa, NULL, NULL);
+    return rsa;
+}
 
+/*
+ * create RSA private key
+ */
+RSA * get_privkey(char * filename)
+{
+    FILE * fp = fopen(filename, "rb");
+    if (fp == NULL)
+        die("RSA error", "public.pem not found");
+    RSA * rsa = RSA_new();
+    PEM_read_RSAPrivateKey(fp, &rsa, NULL, NULL);
+    return rsa;
+}
+
+/*
+ * encrypt data using public key
+ */
+/*
+int encrypt(unsigned char * plain_data, int length, unsigned char * key, unsigned char * encrypted)
+{
+    RSA * rsa = createRSA(key, 1);
+    return RSA_public_encrypt(length, plain_data, encrypted, rsa, padding);
 }
 */
+
+/*
+ * decrypt data using private key
+ */
+/*
+int decrypt(unsigned char * encrypted, int length, unsigned char * key, unsigned char * decrypted)
+{
+    RSA * rsa = createRSA(key, 0);
+    return RSA_private_decrypt(length, encrypted, decrypted, rsa, padding);
+}
+*/
+
+void printStr(char * str1, unsigned char * str2)
+{
+    fprintf(stderr, "%s: %s\n", str1, str2);
+}
+
+void printNum(char * str1, int num)
+{
+    fprintf(stderr, "%s: %i\n", str1, num);
+}
 
 /*
  * put_file() - send a file to the server accessible via the given socket fd
@@ -248,6 +294,49 @@ void put_file(int fd, char *put_name)
             fclose(fp);
             die("Put_file fread error", "bytes_read != file_size");
     }
+    fclose(fp);
+
+    /* encrypt */
+    int padding = RSA_NO_PADDING;
+    //padding = RSA_PKCS1_PADDING;
+    int enc_size, enc_segsize, length, enc_remain = file_size;
+    RSA * rsa = get_pubkey("public.pem");
+    int key_size = 256;
+    unsigned char encrypted[file_size * 2], err[130];
+    bzero(encrypted, file_size * 2);
+    encrypted[0] = '\0';
+    char * file_ptr = file_buf;
+    while (enc_remain)
+    {
+        if (enc_remain >= key_size)
+            length = key_size;
+        else
+            length = enc_remain;
+
+        char enc_block[length];
+        char plain_data[length];
+
+        strncpy(plain_data, file_ptr, length);
+        //printf("%s", plain_data);
+
+        if ((enc_segsize = RSA_public_encrypt(key_size, plain_data, enc_block, rsa, padding)) == -1)
+        {
+            ERR_load_crypto_strings();
+            ERR_error_string(ERR_get_error(), err);
+            fprintf(stderr, "Error encrypting message: %s\n", err);
+            die("PUT", "encryption failed"); 
+        }
+        strcat(encrypted, enc_block);
+        enc_remain -= length;
+        enc_size += enc_segsize;
+        file_ptr += length;
+    }
+
+    /* set file to enc */
+    file_size = enc_size;
+    /* copy encrypted buffer into new buffer */
+    unsigned char new_encrypted[enc_size];
+    strncpy(new_encrypted, encrypted, enc_size);
 
     /* hacky way to get number of digits in the file size */
     int j = 1, temp_size = file_size / 10; //acount for file_size of 0
@@ -257,7 +346,6 @@ void put_file(int fd, char *put_name)
         temp_size /= 10;
     }
     /* close file */
-    fclose(fp);
 
     /* file size as string */
     char str_fsize[j];
@@ -281,14 +369,17 @@ void put_file(int fd, char *put_name)
     /* send md5 sizeof(hash) and hash */
     int i = 0;
     unsigned char client_hash[MD5_DIGEST_LENGTH], client_digest[33];
-    MD5(file_buf, sizeof(file_buf), client_hash);
+    //MD5(file_buf, sizeof(file_buf), client_hash);
+    MD5(new_encrypted, enc_size, client_hash);
     for (i = 0; i < 16; i++)
          sprintf(&client_digest[i*2], "%02x", client_hash[i]);
     Send_Int(fd, sizeof(client_digest));
     Send(fd, client_digest, sizeof(client_digest));
 
     /* send put file */
-    Send(fd, file_buf, file_size);
+    //Send(fd, file_buf, file_size);
+    Send(fd, new_encrypted, enc_size);
+    //printStr("Encrypted data", encrypted);
 
     /* get size of response header and create buffer */ 
     uint32_t rec_size = Receive_Int(fd);
@@ -369,11 +460,55 @@ void get_file(int fd, char *get_name, char *save_name)
          sprintf(&client_digest[i*2], "%02x", client_hash[i]);
 
     /* compare MD5 server and client hash digests */
-    if (memcmp(client_digest, server_digest, MD5_DIGEST_LENGTH))
-        die("GET", "client and server MD5 digest hashes do not match");
+    //if (memcmp(client_digest, server_digest, MD5_DIGEST_LENGTH))
+    //    die("GET", "client and server MD5 digest hashes do not match");
+
+    /* decrypt */
+    int padding = RSA_NO_PADDING;
+    int dcr_size, dcr_segsize, length, dcr_remain = file_size;
+    RSA * rsa = get_privkey("private.pem");
+    //RSA * rsa = get_publickey("public.pem");
+    int key_size = 256;
+    unsigned char decrypted[key_size * file_size], err[130];
+    decrypted[0] = '\0';
+    char * file_ptr = file_buf;
+    while (dcr_remain)
+    {
+        if (dcr_remain >= key_size)
+            length = key_size - 1;
+        else
+            length = dcr_remain;
+
+        char dcr_block[length];
+        char enc_data[length];
+
+        strncpy(enc_data, file_ptr, length);
+
+        if ((dcr_segsize = RSA_private_decrypt(length, enc_data, dcr_block, rsa, padding)) == -1)
+        {
+            ERR_load_crypto_strings();
+            ERR_error_string(ERR_get_error(), err);
+            fprintf(stderr, "Error decrypting message: %s\n", err);
+            die("GET", "decryption failed"); 
+        }
+        strcat(decrypted, dcr_block);
+        //printf("dec: %s\n", enc_data);
+        dcr_remain -= length;
+        dcr_size += dcr_segsize;
+        file_ptr += length;
+    }
+
+    printf("Decripted file:\n\n%s\n", decrypted);
+
+    /* set file to enc */
+    file_size = dcr_size;
+
+    /* END OF DECRYPTION */
+
   
     FILE * fp = fopen(save_name, "wb");
-    fwrite(file_buf, sizeof(file_buf), 1, fp);
+    //fwrite(file_buf, sizeof(file_buf), 1, fp);
+    fwrite(decrypted, dcr_size, 1, fp);
     fclose(fp);
 }
 
